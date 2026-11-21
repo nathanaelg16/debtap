@@ -61,6 +61,25 @@ for i in "$@"; do
 		output=set
 	fi
 done
+skiprepos=()
+skiprepoargs=("$@")
+for i in "${!skiprepoargs[@]}"; do
+	skiprepovalue=
+	if [[ "${skiprepoargs[$i]}" == "--skip-repo" ]]; then
+		skiprepovalue="${skiprepoargs[$i+1]}"
+	elif [[ "${skiprepoargs[$i]}" == --skip-repo=* ]]; then
+		skiprepovalue="${skiprepoargs[$i]#--skip-repo=}"
+	else
+		continue
+	fi
+	if [[ -z "$skiprepovalue" ]] || [[ "$skiprepovalue" == -* ]]; then
+		echo -e "${red}Error: You haven't specified a repository to skip${NC}"; exit 1
+	fi
+	IFS=',' read -ra skiprepolist <<< "$skiprepovalue"
+	for j in "${skiprepolist[@]}"; do
+		[[ -n "$j" ]] && skiprepos+=("$j")
+	done
+done
 if [[ $output == set ]]; then
 	for i in $(eval echo {0..$((${#optionsarray[@]}-1))}); do
 		if [[ "${optionsarray[$i]}" =~ ^-o$ ]] || [[ "${optionsarray[$i]}" =~ ^--output$ ]]; then
@@ -78,7 +97,7 @@ if [[ $pseudo == set ]] && [[ ! -e /var/lib/pacman/sync/multilib.db ]] && [[ ! -
 	echo -e "${red}Error: You are either running non-x86_64 Arch Linux, or you haven't enabled multilib repository. If you are running x86_64 Arch Linux, you must enable a multilib repository and then synchronize pacman database${NC}"; exit 1
 fi
 if [[ $help == set ]]; then
-	echo -e "Syntax: debtap -o output_directory [other_options] package_filename\n\nOptions:\n\n    -h  --help        Print this help message\n    -u  --update      Update debtap database\n    -q  --quiet       Bypass all questions, except for editing metadata file(s)\n    -Q  --Quiet       Bypass all questions (not recommended)\n    -s  --pseudo      Create a pseudo-64-bit package from a 32-bit .deb package\n    -w  --wipeout     Wipeout versions from all dependencies, conflicts etc.\n    -p  --pkgbuild    Additionally generate a PKGBUILD file\n    -P  --Pkgbuild    Generate a PKGBUILD file only\n    -o  --output      Output directory for generated package and/or PKGBUILD (optional)\n    -v  --version     Print version"; exit 0
+	echo -e "Syntax: debtap -o output_directory [other_options] package_filename\n\nOptions:\n\n    -h  --help        Print this help message\n    -u  --update      Update debtap database\n    -q  --quiet       Bypass all questions, except for editing metadata file(s)\n    -Q  --Quiet       Bypass all questions (not recommended)\n    -s  --pseudo      Create a pseudo-64-bit package from a 32-bit .deb package\n    -w  --wipeout     Wipeout versions from all dependencies, conflicts etc.\n    -p  --pkgbuild    Additionally generate a PKGBUILD file\n    -P  --Pkgbuild    Generate a PKGBUILD file only\n    -o  --output      Output directory for generated package and/or PKGBUILD (optional)\n        --skip-repo   Skip repository when updating (with -u; repeatable, comma-separated)\n    -v  --version     Print version"; exit 0
 elif [[ $version == set ]]; then
 	echo -e "$Version"; exit 0
 elif [[ $update == set ]]; then
@@ -88,7 +107,30 @@ elif [[ $update == set ]]; then
         mkdir -p /var/cache/debtap 2> /dev/null
         chmod 755 /var/cache/debtap
         echo -e "${lightgreen}==>${NC} ${bold}Synchronizing pkgfile database...${normal}"
-        pkgfile -u
+        if [[ ${#skiprepos[@]} -gt 0 ]]; then
+            skiprepoconf=$(mktemp /tmp/debtap-pacman.XXXXXX.conf)
+            trap 'rm -f "$skiprepoconf"' EXIT
+            pacman-conf > "$skiprepoconf.full"
+            if [[ $? != 0 ]]; then
+                rm -f "$skiprepoconf.full"
+                echo -e "${red}Error: Could not read pacman configuration. Exiting...${NC}"; exit 1
+            fi
+            for j in "${skiprepos[@]}"; do
+                if ! grep -qxF "[$j]" "$skiprepoconf.full"; then
+                    echo -e "${lightred}Warning: repository '$j' not found in pacman configuration${NC}"
+                fi
+            done
+            gawk -v skip="$(IFS=,; echo "${skiprepos[*]}")" '
+                BEGIN { n = split(skip, a, ","); for (k = 1; k <= n; k++) s[a[k]] = 1 }
+                /^\[.*\]$/ { drop = (substr($0, 2, length($0) - 2) in s) }
+                !drop
+            ' "$skiprepoconf.full" > "$skiprepoconf"
+            rm -f "$skiprepoconf.full"
+            echo -e "${lightgreen}==>${NC} ${bold}Skipping repositories: ${skiprepos[*]}${normal}"
+            pkgfile -u -C "$skiprepoconf"
+        else
+            pkgfile -u
+        fi
         if [[ $? != 0 ]]; then
             echo -e "${red}Synchronization failed. Exiting...${NC}"; exit 1
         else
@@ -144,14 +186,14 @@ elif [[ $update == set ]]; then
         fi
     fi
 elif [[ "${@: -1}" == "debtap" ]] || [[ "${@: -1}" =~ /debtap$ ]] || [[ "${@: -1}" =~ ^-([qQswpPo]+)$ ]] || [[ "${@: -1}" =~ ^--([quiet|Quiet|pseudo|wipeout|pkgbuild|Pkgbuild|output]){1,}$ ]] || [[ "${@: -1}" =~ ^-(o+)$ ]] || [[ "${@: -1}" =~ ^--(output){1,}$ ]] || [[ -d "${@: -1}" ]]; then
-	echo -e "${red}Error: You haven't specified a deb package${NC}\nSyntax: debtap -o output_directory [other_options] package_filename\n\nOptions:\n\n    -h  --help        Print this help message\n    -u  --update      Update debtap database\n    -q  --quiet       Bypass all questions, except for editing metadata file(s)\n    -Q  --Quiet       Bypass all questions (not recommended)\n    -s  --pseudo      Create a pseudo-64-bit package from a 32-bit .deb package\n    -w  --wipeout     Wipeout versions from all dependencies, conflicts etc.\n    -p  --pkgbuild    Additionally generate a PKGBUILD file\n    -P  --Pkgbuild    Generate a PKGBUILD file only\n    -o  --output      Output directory for generated package and/or PKGBUILD (optional)\n    -v  --version     Print version"; exit 1
+	echo -e "${red}Error: You haven't specified a deb package${NC}\nSyntax: debtap -o output_directory [other_options] package_filename\n\nOptions:\n\n    -h  --help        Print this help message\n    -u  --update      Update debtap database\n    -q  --quiet       Bypass all questions, except for editing metadata file(s)\n    -Q  --Quiet       Bypass all questions (not recommended)\n    -s  --pseudo      Create a pseudo-64-bit package from a 32-bit .deb package\n    -w  --wipeout     Wipeout versions from all dependencies, conflicts etc.\n    -p  --pkgbuild    Additionally generate a PKGBUILD file\n    -P  --Pkgbuild    Generate a PKGBUILD file only\n    -o  --output      Output directory for generated package and/or PKGBUILD (optional)\n        --skip-repo   Skip repository when updating (with -u; repeatable, comma-separated)\n    -v  --version     Print version"; exit 1
 elif [[ "${@: -1}" =~ ^(-)+(.)*$ ]] || [[ $(ls "${@: -1}" &> /dev/null; echo $?) != 0 ]]; then
 	echo -e "${red}Error: No such file or directory or invalid option${NC}"; exit 1
 elif [[ $(file -S -b "${@: -1}" | grep -q "Debian binary package"; echo $?) != 0 ]]; then
 	echo -e "${red}Error: You haven't specified a valid deb package${NC}"; exit 1
 fi
 
-if [[ ! $(ls /var/cache/pkgfile | grep -E '*.files?(.[[:digit:]]{3})' 2> /dev/null) ]] || [[ ! $(ls /var/cache/debtap/*-packages-files 2> /dev/null) ]] || [[ ! -e /var/cache/debtap/extended-base-packages-list ]] || [[ ! -e /var/cache/debtap/aur-packages ]] || [[ ! -e /var/cache/debtap/virtual-packages ]]; then
+if [[ ! $(ls /var/cache/pkgfile | grep -E '\.files(\.[[:digit:]]{3})?$' 2> /dev/null) ]] || [[ ! $(ls /var/cache/debtap/*-packages-files 2> /dev/null) ]] || [[ ! -e /var/cache/debtap/extended-base-packages-list ]] || [[ ! -e /var/cache/debtap/aur-packages ]] || [[ ! -e /var/cache/debtap/virtual-packages ]]; then
 	if [[ $pseudo != set ]]; then
 		echo -e "${red}Error: You must run at least once \"debtap -u\" with root privileges (preferably recently), before running this script${NC}"; exit 1
 	else

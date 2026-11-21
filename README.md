@@ -49,4 +49,5 @@ Available options:
     -p  --pkgbuild    Additionally generate a PKGBUILD file
     -P  --Pkgbuild    Generate a PKGBUILD file only
     -o  --output      Output directory for generated package and/or PKGBUILD (optional)
+        --skip-repo   Skip repository when updating (with -u; repeatable, comma-separated)
     -v  --version     Print version
